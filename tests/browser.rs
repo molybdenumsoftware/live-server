@@ -3,7 +3,7 @@ use std::{
     ffi::OsStr,
     path::{Path, PathBuf},
     sync::{LazyLock, Mutex},
-    time::Duration,
+    time::{Duration, SystemTime},
 };
 
 use chromiumoxide::{Browser, BrowserConfig, cdp::browser_protocol::network::EventLoadingFinished};
@@ -145,6 +145,51 @@ async fn symlink_swap() {
         .iter()
         .collect::<PathBuf>();
     let fixture = fixture_with("modified").await;
+    symlink_dir(&fixture, &temp_symlink_path).unwrap();
+    fs::rename(&temp_symlink_path, &symlink_path).await.unwrap();
+
+    with_timeout(load_event_stream.next()).await.unwrap();
+
+    let title = page.get_title().await.unwrap().unwrap();
+    assert_eq!(title, "modified");
+}
+
+// This seems to be the case with nix `result` symlinks
+#[tokio::test]
+async fn symlink_to_mtime_0_swap() {
+    let fixture = fixture_with("initial").await;
+    std::fs::File::open(&fixture)
+        .unwrap()
+        .set_modified(SystemTime::UNIX_EPOCH)
+        .unwrap();
+    let symlink_parent = tempdir().unwrap();
+    let symlink_path = [symlink_parent.path(), Path::new("symlink")]
+        .iter()
+        .collect::<PathBuf>();
+    symlink_dir(&fixture, &symlink_path).unwrap();
+    let (_subject, authority) =
+        subject_with(&["--poll", symlink_path.as_os_str().to_str().unwrap()]);
+    let (browser, _browser_dir) = fresh_browser().await;
+
+    let page = browser
+        .new_page(format!("http://{authority}/"))
+        .await
+        .unwrap();
+
+    page.wait_for_navigation().await.unwrap();
+    let title = page.get_title().await.unwrap().unwrap();
+    assert_eq!(title, "initial");
+
+    let mut load_event_stream = page.event_listener::<EventLoadingFinished>().await.unwrap();
+
+    let temp_symlink_path = [symlink_parent.path(), Path::new("temp-symlink")]
+        .iter()
+        .collect::<PathBuf>();
+    let fixture = fixture_with("modified").await;
+    std::fs::File::open(&fixture)
+        .unwrap()
+        .set_modified(SystemTime::UNIX_EPOCH)
+        .unwrap();
     symlink_dir(&fixture, &temp_symlink_path).unwrap();
     fs::rename(&temp_symlink_path, &symlink_path).await.unwrap();
 
